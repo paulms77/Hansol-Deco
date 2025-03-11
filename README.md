@@ -32,25 +32,68 @@ PDF 문서에는 검색에 Unnessesary한 사진, 특수 문자, 공백, 줄바�
 PDF 문서에는 검색에 불필요한 사진, 특수 문자, 공백, 줄바꿈, 부록 등의 불필요한 요소들이 포함될 수 있습니다.
 예시: "KOSHAGUIDE C552015" 부록 문구 등은 Unnecessary한 데이터로, 이를 제거하여 실제 사고 원인 분석에 유용한 텍스트만 남길 수 있도록 클린징 작업을 진행합니다.
    
-4) Split
+3) Split
 RecursiveCharacterTextSplitter를 사용하여 문서를 잘게 분할합니다.
 이 방법은 문서를 일정 길이로 자르고, 각 조각을 개별적으로 다룰 수 있게 해주며, 이후 모델 학습에 최적화된 텍스트를 제공합니다.
 이를 통해 사고 원인 및 관련 문서들을 더 잘게 나누어 처리할 수 있습니다.
 
-5) Embed
+4) Embed
 텍스트 임베딩에는 SentenceTransformer("all-MiniLM-L6-v2") 모델을 사용합니다. 이 모델은 빠르고 효율적으로 텍스트를 벡터 형태로 변환하여 의미 기반 검색에 적합한 표현을 제공합니다.
 이 과정을 통해 각 문서가 의미적으로 잘 표현된 벡터로 변환되어, 검색 및 후속 처리에서 높은 성능을 발휘합니다.
 
+5) Store
+문서를 하이브리드 검색 방식을 사용하기 위한 형식으로 저장합니다.
 
+**BM25 색인 저장**
 
-7) Store
-문서를 하이브리드 검색 방식을 통해 저장합니다.
-BM25 Retriever는 키워드 기반 검색을, FAISS Retriever는 의미 기반 검색을 담당합니다.
-이 두 방식을 하이브리드 방식으로 결합하여 정확한 사고 원인 문서를 검색합니다.
+BM25 Retriever를 활용하여 키워드 기반 색인을 생성합니다.
+이를 통해 특정 키워드가 포함된 문서를 빠르게 검색할 수 있습니다.
 
-BM25는 간단한 키워드 검색을 통해 빠르게 관련성 있는 문서를 추출합니다.
-FAISS는 의미적 유사성을 기반으로 보다 정교한 검색을 수행하여, 사고 원인과 밀접하게 관련된 문서를 찾습니다.
-이 두 가지 검색 방법을 결합하여 정확하고 효율적인 사고 원인 관련 문서를 검색할 수 있습니다.
-또한, 특정 스코어 임계치(Threshold) 이상에 해당하는 문서만 저장하여, 불필요한 문서를 필터링하고, 관련성이 높은 문서들만 저장합니다. 이를 통해 최적화된 문서 저장이 가능하며, 사고 원인 분석의 품질을 향상시킬 수 있습니다.
+**FAISS 벡터 저장**
+
+문서를 **SentenceTransformer("all-MiniLM-L6-v2")**를 사용하여 벡터로 변환합니다.
+변환된 벡터를 FAISS Retriever에 저장하여 의미적 유사성을 활용한 검색이 가능하도록 합니다.
+임계치(Threshold) 기반 문서 필터링
+
+BM25 스코어 + FAISS 유사도 점수를 결합하여 특정 임계치(Threshold) 이상인 문서만 저장합니다.
+이 과정을 통해 불필요한 문서를 걸러내고, 사고 원인 분석에 유의미한 문서만 보관합니다.
+이러한 과정을 통해 문서가 검색 시스템에 최적화된 상태로 저장되며, 이후 검색 및 사고 원인 분석 과정에서 신속하고 정확한 검색이 가능해집니다.
 
 <img width="1358" alt="image" src="https://github.com/user-attachments/assets/a7b96b20-af95-4ebe-a044-0dc6fa03c2c7" />
+
+**사고 원인 예방 대책 생성 (MT5 활용)**
+본 프로젝트에서는 한국어에 적합한 허깅페이스 멀티링구얼 T5(MT5) 모델을 활용하여 사고 원인을 분석하고, 이를 바탕으로 예방 및 재발 방지 대책을 자동 생성합니다.
+
+**모델 및 토크나이저 설정**
+```
+model_name = "google/mt5-small"  
+tokenizer = MT5Tokenizer.from_pretrained(model_name)
+model = MT5ForConditionalGeneration.from_pretrained(model_name)
+```
+
+**MT5(Multilingual T5)** 는 다양한 언어를 지원하는 T5 모델로, 한국어 데이터에도 적합합니다.
+MT5Tokenizer와 MT5ForConditionalGeneration을 사용하여 텍스트를 처리하고 대책을 생성합니다.
+
+**대책 생성 함수 (generate_prevention_plan)**
+```
+def generate_prevention_plan(query_text, retrieved_texts, max_length=200):
+    """한국어 MT5 모델을 활용하여 대책 생성"""
+    input_text = f"사고 원인: {query_text} \n 관련 문서: {' '.join(retrieved_texts)}"
+    inputs = tokenizer(input_text, return_tensors="pt", truncation=True, padding=True, max_length=512)
+    output_ids = model.generate(**inputs, max_length=max_length)
+    return tokenizer.decode(output_ids[0], skip_special_tokens=True)
+```
+
+**설명**
+
+>query_text: 사고 원인에 대한 입력
+> retrieved_texts: 하이브리드 검색을 통해 검색된 관련 문서
+
+이를 기반으로 "사고 원인: {query_text} \n 관련 문서: {retrieved_texts}" 형식으로 구성 토큰화 및 모델 입력 준비
+
+- tokenizer(input_text, return_tensors="pt", truncation=True, padding=True, max_length=512) 토큰 길이가 512를 초과하면 자동으로 잘림(truncation) PyTorch(pt) 텐서 형식으로 변환
+
+MT5 모델을 활용한 문장 생성
+- model.generate(**inputs, max_length=max_length) 최대 200자 길이(max_length=200)로 대책 문장을 생성
+
+- tokenizer.decode(output_ids[0], skip_special_tokens=True) 특수 토큰을 제거하고 최종 대책 문장을 반환
