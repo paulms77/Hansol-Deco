@@ -1,6 +1,6 @@
-**Dataset Info.**
+# **Dataset Info.**
 
-출저: ![Dacon](https://dacon.io/competitions/official/236455/overview/rules)
+## 출저: [Dacon](https://dacon.io/competitions/official/236455/overview/rules)
 
 ![image](https://github.com/user-attachments/assets/d695cfd1-69e8-4f4f-9a13-f1fb9d5ed526)
 
