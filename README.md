@@ -1,104 +1,323 @@
-**RAG(Retrieval-Augmented Generation)**
+# Hansol Deco Season 3 — Construction Accident Prevention & Response Generation
 
-## 주제
-**건설공사 사고 상황 데이터를 바탕으로 사고 원인을 분석하고 재발방지 대책을 포함한 대응책을 자동으로 생성하는 RAG 모델을 개발**
+RAG pipeline for the DACON **"건설공사 사고 예방 및 대응책 생성"** generative-AI
+competition: given the circumstances of a construction-site accident, generate
+the recurrence-prevention measures and follow-up action plan.
 
-## 배경
-이 프로젝트에서는 대규모 언어 모델(LLM)을 사용하는 대신, RAG(Retrieval-Augmented Generation) 방식을 선택한 이유는 환경과 효율성을 고려한 최적화 때문입니다.
-대규모 언어 모델을 사용하려면 높은 연산 자원과 메모리 요구 사항을 충족해야 하며, 이는 실제 프로덕션 환경에서 비용 및 성능 면에서 부담이 될 수 있습니다. 특히, 사고 분석과 재발 방지 대책을 생성하는 작업은 정확하고 실용적인 정보를 추출해야 하므로, 단순한 LLM을 사용하는 방식보다는 내부 데이터베이스에서 관련 정보를 빠르게 검색하고, 이를 바탕으로 구체적인 대응책을 생성하는 것이 더욱 효율입니다.
+| | |
+| --- | --- |
+| **Competition** | [건설공사 사고 예방 및 대응책 생성 : 한솔데코 시즌3 생성 AI 경진대회](https://dacon.io/competitions/official/236455/overview/description) |
+| **Host** | Hansol Deco · DACON |
+| **Period** | 17 Feb 2025 – 24 Mar 2025 |
+| **Task** | Korean text generation, grounded in retrieved safety guidelines |
+| **Metric** | Jaccard similarity (lexical) + S-BERT cosine similarity (semantic) |
+| **Environment** | Google Colab (T4) and Kaggle notebooks — free tier only |
 
-## 학습 데이터 전처리 프로세스 :
+---
 
-1) **종류 분할**
-공사 종류에 대한 정보를 대분류, 중분류, 소분류로 세분화하여 구조화합니다.
+## Table of contents
 
-예시: 건축 / 건축물 / 근린생활시설
-- 공사종류(대분류) = 건축
-- 공사종류(중분류) = 건축물
-- 공사종류(소분류) = 근린생활시설
+- [The problem](#the-problem)
+- [Why RAG instead of a large LLM](#why-rag-instead-of-a-large-llm)
+- [Data](#data)
+- [Evaluation](#evaluation)
+- [Pipeline](#pipeline)
+- [Notebooks](#notebooks)
+- [Setup](#setup)
+- [Usage](#usage)
+- [Notes from building this](#notes-from-building-this)
+- [Repository layout](#repository-layout)
 
-사고 객체 역시 동일하게 **사고 객체(대분류), 사고 객체(중분류), 사고 객체(소분류)**로 분할하여 보다 정교한 분류를 진행합니다. 이 과정을 통해 각 사고 데이터를 보다 정확하고 체계적으로 분류하여, 나중에 사고 원인 분석과 대책을 보다 정교하게 도출할 수 있습니다.
+---
 
-## PDF 문서 전처리 프로세스 :
-![image](https://github.com/user-attachments/assets/8b15dc25-aa0f-4707-826d-8f6c07aea446)
+## The problem
 
-1) **Load**
+Each record describes one real construction accident — weather, temperature,
+humidity, type of construction, floor area, floor information, human injury,
+property damage, trade, object involved, work process, location, body part, and
+a free-text accident cause. The target is the free-text field
+`재발방지대책 및 향후조치계획` ("recurrence prevention measures and future action
+plan").
 
-**과제에 적합한 PDFReader 선택**
+So this is not classification. It is conditional generation that has to produce
+plausible, specific, *domain-correct* Korean safety prose — which is exactly
+where a model with no construction-safety knowledge falls over.
 
-PDF 문서를 로드하는 과정에서 fitz를 사용하면 페이지 번호만 제공되며, langchain.PdfReader는 한글 인코딩 처리에 우수한 성능을 보이고, 속도 면에서도 안정적입니다.
-따라서 PDF 문서 로딩을 위해 langchain.PdfReader를 사용하여 문서를 처리합니다. 이때, 불필요한 요소들이 포함된 문서도 존재하므로 이를 처리하는 과정이 중요합니다.
+## Why RAG instead of a large LLM
 
-2) **문서 정리 및 클린징**
-   
-PDF 문서에는 검색에 불필요한 사진, 특수 문자, 공백, 줄바꿈, 부록 등의 불필요한 요소들이 포함될 수 있습니다.
-예시: "KOSHAGUIDE C552015" 부록 문구 등은 Unnecessary한 데이터로, 이를 제거하여 실제 사고 원인 분석에 유용한 텍스트만 남길 수 있도록 클린징 작업을 진행합니다.
-   
-3) **Split**
-   
-RecursiveCharacterTextSplitter를 사용하여 문서를 잘게 분할합니다.
-이 방법은 문서를 일정 길이로 자르고, 각 조각을 개별적으로 다룰 수 있게 해주며, 이후 모델 학습에 최적화된 텍스트를 제공합니다.
-이를 통해 사고 원인 및 관련 문서들을 더 잘게 나누어 처리할 수 있습니다.
+The obvious approach is to fine-tune a large Korean LLM. This project
+deliberately does not, for two reasons.
 
-4) **Embed**
-   
-텍스트 임베딩에는 SentenceTransformer("all-MiniLM-L6-v2") 모델을 사용합니다. 이 모델은 빠르고 효율적으로 텍스트를 벡터 형태로 변환하여 의미 기반 검색에 적합한 표현을 제공합니다.
-이 과정을 통해 각 문서가 의미적으로 잘 표현된 벡터로 변환되어, 검색 및 후속 처리에서 높은 성능을 발휘합니다.
+**Compute.** The whole thing had to run on Colab's free T4 and Kaggle notebooks.
+A 10B+ model with meaningful context does not fit that budget, and anything that
+does not fit cannot be iterated on.
 
-5) **Store**
+**Grounding.** The answer has to be practical and correct, not fluent. The
+competition ships 104 official construction-safety guideline PDFs — the domain
+knowledge is *already written down*. Retrieving the right passage and conditioning
+on it gets closer to a correct answer than asking a general model to recall
+safety procedure from its weights.
 
-문서를 하이브리드 검색 방식을 사용하기 위한 형식으로 저장합니다.
+That reframes the problem from "train a bigger generator" to "retrieve the right
+evidence", which is both cheaper and more accurate here.
 
-**BM25 색인 저장**
+## Data
 
-BM25 Retriever를 활용하여 키워드 기반 색인을 생성합니다.
-이를 통해 특정 키워드가 포함된 문서를 빠르게 검색할 수 있습니다.
+From [the competition page](https://dacon.io/competitions/official/236455/data):
 
-**FAISS 벡터 저장**
+| File | Contents |
+| --- | --- |
+| `train.csv` | accident records **with** the target text |
+| `test.csv` | accident records without the target |
+| `건설안전지침/` | 104 construction-safety guideline PDFs |
+| `sample_submission.csv` | ID, generated answer, and `vec_0 … vec_767` embedding columns |
 
-문서를 **SentenceTransformer("all-MiniLM-L6-v2")**를 사용하여 벡터로 변환합니다.
-변환된 벡터를 FAISS Retriever에 저장하여 의미적 유사성을 활용한 검색이 가능하도록 합니다.
-임계치(Threshold) 기반 문서 필터링
+`Dataset/` in this repository holds `test.csv` and `sample_submission.csv` plus a
+[data dictionary](Dataset/README.md). `train.csv` and the PDF corpus are not
+redistributed — download them from DACON.
 
-BM25 스코어 + FAISS 유사도 점수를 결합하여 특정 임계치(Threshold) 이상인 문서만 저장합니다.
-이 과정을 통해 불필요한 문서를 걸러내고, 사고 원인 분석에 유의미한 문서만 보관합니다.
-이러한 과정을 통해 문서가 검색 시스템에 최적화된 상태로 저장되며, 이후 검색 및 사고 원인 분석 과정에서 신속하고 정확한 검색이 가능해집니다.
+### Feature engineering
 
-<img width="1358" alt="image" src="https://github.com/user-attachments/assets/a7b96b20-af95-4ebe-a044-0dc6fa03c2c7" />
+Two fields are hierarchical strings and get split into three levels each:
 
-**사고 원인 예방 대책 생성 (MT5 활용)**
-본 프로젝트에서는 한국어에 적합한 허깅페이스 멀티링구얼 T5(MT5) 모델을 활용하여 사고 원인을 분석하고, 이를 바탕으로 예방 및 재발 방지 대책을 자동 생성합니다.
-
-**모델 및 토크나이저 설정**
 ```
-model_name = "google/mt5-small"  
-tokenizer = MT5Tokenizer.from_pretrained(model_name)
-model = MT5ForConditionalGeneration.from_pretrained(model_name)
+공사종류:  "건축 / 건축물 / 근린생활시설"
+             → 대분류 = 건축
+             → 중분류 = 건축물
+             → 소분류 = 근린생활시설
+
+사고객체:  same treatment (대분류 / 중분류 / 소분류)
 ```
 
-**MT5(Multilingual T5)** 는 다양한 언어를 지원하는 T5 모델로, 한국어 데이터에도 적합합니다.
-MT5Tokenizer와 MT5ForConditionalGeneration을 사용하여 텍스트를 처리하고 대책을 생성합니다.
+This matters for retrieval: matching on `건축` alone is far too coarse, while
+matching on the full raw string is too sparse. Three levels give the retriever
+something to key on at the right granularity.
 
-**대책 생성 함수 (generate_prevention_plan)**
+## Evaluation
+
+Submissions carry both the generated sentence and its 768-dimensional embedding.
+The score combines two similarities against the ground-truth sentence:
+
+- **Jaccard similarity** — lexical overlap of the word sets
+- **S-BERT cosine similarity** — semantic closeness of the embeddings
+
+```python
+def cosine_similarity(a, b):
+    dot = np.dot(a, b)
+    na, nb = np.linalg.norm(a), np.linalg.norm(b)
+    return dot / (na * nb) if na != 0 and nb != 0 else 0
+
+def jaccard_similarity(text1, text2):
+    s1, s2 = set(text1.split()), set(text2.split())
+    return len(s1 & s2) / len(s1 | s2) if s1 | s2 else 0
 ```
-def generate_prevention_plan(query_text, retrieved_texts, max_length=200):
-    """한국어 MT5 모델을 활용하여 대책 생성"""
-    input_text = f"사고 원인: {query_text} \n 관련 문서: {' '.join(retrieved_texts)}"
-    inputs = tokenizer(input_text, return_tensors="pt", truncation=True, padding=True, max_length=512)
-    output_ids = model.generate(**inputs, max_length=max_length)
-    return tokenizer.decode(output_ids[0], skip_special_tokens=True)
+
+> **The embedding model is fixed by the rules.** Ground-truth vectors are
+> produced with `jhgan/ko-sbert-sts`, and the submitted embedding must come from
+> the same model and must describe the same text that is scored for Jaccard.
+> Using a different encoder for the submission silently destroys the score.
+
+Note the tension the metric creates: Jaccard rewards reusing the exact vocabulary
+of the reference, while cosine rewards meaning. A fluent paraphrase scores badly
+on the first; a keyword salad scores badly on the second.
+
+## Pipeline
+
+```
+ train.csv ─┐
+            ├─► field splitting ─► query construction ─┐
+ test.csv  ─┘                                          │
+                                                       ▼
+ 104 safety PDFs ─► load ─► clean ─► split ─► embed ─► hybrid retrieval
+                                                       │   BM25 (lexical)
+                                                       │   FAISS (semantic)
+                                                       ▼
+                                           threshold filter (BM25 + cosine)
+                                                       ▼
+                                             retrieved evidence (top-k = 3)
+                                                       ▼
+                                         generation (MT5 / Llama, [INST])
+                                                       ▼
+                                   answer  ─►  ko-sbert-sts  ─►  submission.csv
 ```
 
-**설명**
+### 1. Load
 
->query_text: 사고 원인에 대한 입력
-> retrieved_texts: 하이브리드 검색을 통해 검색된 관련 문서
+PDF loader choice is not incidental. `fitz` exposes little beyond page numbers,
+whereas `langchain`'s `PdfReader` handles Korean encoding well and is stable on
+throughput — so `PdfReader` it is.
 
-이를 기반으로 "사고 원인: {query_text} \n 관련 문서: {retrieved_texts}" 형식으로 구성 토큰화 및 모델 입력 준비
+### 2. Clean
 
-- tokenizer(input_text, return_tensors="pt", truncation=True, padding=True, max_length=512) 토큰 길이가 512를 초과하면 자동으로 잘림(truncation) PyTorch(pt) 텐서 형식으로 변환
+Safety guideline PDFs are full of material that is noise for retrieval: images,
+special characters, stray whitespace and newlines, appendices, and repeated
+boilerplate such as `KOSHA GUIDE C552015` headers. All of it is stripped so that
+only text relevant to accident-cause analysis survives.
 
-MT5 모델을 활용한 문장 생성
-- model.generate(**inputs, max_length=max_length) 최대 200자 길이(max_length=200)로 대책 문장을 생성
+### 3. Split
 
-- tokenizer.decode(output_ids[0], skip_special_tokens=True) 특수 토큰을 제거하고 최종 대책 문장을 반환
+`RecursiveCharacterTextSplitter` chunks the cleaned documents so each piece can
+be embedded and retrieved independently.
+
+### 4. Embed
+
+`SentenceTransformer("jhgan/ko-sbert-nli")` for the retrieval corpus — a Korean
+sentence encoder, unlike the English-only defaults, which matters when both the
+query and the corpus are Korean.
+
+> The submission embedding is a separate step and **must** use
+> `jhgan/ko-sbert-sts` per the rules.
+
+### 5. Store and retrieve — hybrid
+
+Two indexes over the same chunks:
+
+- **BM25** (`rank_bm25`) for keyword matching — good at catching exact domain
+  terms like 아웃트리거 or 타설작업
+- **FAISS** over the sentence embeddings for semantic matching — good at catching
+  paraphrases the keyword index misses
+
+Scores from both are combined and only chunks above a **threshold** are kept.
+The filter is the useful part: without it, top-k always returns *something*, and
+irrelevant evidence actively degrades the generated answer. Retrieving nothing is
+better than retrieving noise.
+
+Similarity computation over the full corpus is parallelised (multiprocessing,
+with `joblib` caching of retrieved results) — on free-tier hardware, re-running
+retrieval from scratch on every iteration is the main time sink.
+
+### 6. Generate
+
+Two generators were tried:
+
+- **`google/mt5-small`** — multilingual T5, handles Korean, small enough for the
+  compute budget
+
+  ```python
+  def generate_prevention_plan(query_text, retrieved_texts, max_length=200):
+      input_text = f"사고 원인: {query_text} \n 관련 문서: {' '.join(retrieved_texts)}"
+      inputs = tokenizer(input_text, return_tensors="pt",
+                         truncation=True, padding=True, max_length=512)
+      output_ids = model.generate(**inputs, max_length=max_length)
+      return tokenizer.decode(output_ids[0], skip_special_tokens=True)
+  ```
+
+- **Llama-family instruct models** — where wrapping the prompt in `[INST] … [/INST]`
+  turned out to matter a great deal for output quality
+
+A **retrieval-only** submission is also produced, which simply returns the
+prevention plan of the most similar historical accident. It is a strong baseline:
+when a small generator produces vague text, a real sentence written by a real
+engineer about a genuinely similar accident often scores better on both halves of
+the metric.
+
+## Notebooks
+
+The two notebooks are the same pipeline at two stages, in two environments.
+Reading them side by side shows what changed.
+
+| | [`01_retrieval_colab.ipynb`](notebooks/01_retrieval_colab.ipynb) | [`02_rag_generation_kaggle.ipynb`](notebooks/02_rag_generation_kaggle.ipynb) |
+| --- | --- | --- |
+| Environment | Google Colab (Drive mount, `/gdrive/MyDrive/open`) | Kaggle (`/kaggle/input/opendata`) |
+| Cells | 68 | 78 |
+| Retrieval query fields | `인적사고`, `작업프로세스`, `사고원인` | `인적사고`, `사고원인` |
+| Retrieval | ✅ BM25 + FAISS hybrid | ✅ same |
+| Retrieval-only submission | ✅ `submission.csv` | ✅ `rag_submission.csv` |
+| Generation stage | partial (MT5 experiments) | ✅ full, `final_submission.csv` |
+| Llama `[INST]` prompting | — | ✅ |
+
+The narrowing of the retrieval query from three fields to two is the substantive
+change: `작업프로세스` ("work process") turned out to add more noise than signal,
+pulling in accidents that shared a work stage but had unrelated causes.
+
+## Setup
+
+```bash
+git clone https://github.com/paulms77/Hansol-Deco.git
+cd Hansol-Deco
+
+pip install transformers peft accelerate bitsandbytes datasets huggingface_hub
+pip install PyPDF2 faiss-cpu sumy rank_bm25 sentence-transformers langchain
+```
+
+Then download `train.csv` and the `건설안전지침/` PDF folder from the
+[competition data page](https://dacon.io/competitions/official/236455/data) and
+place them next to `Dataset/`:
+
+```
+Dataset/
+├── train.csv              ← from DACON
+├── test.csv               ✓ included
+├── sample_submission.csv  ✓ included
+└── 건설안전지침/           ← from DACON (104 PDFs)
+```
+
+## Usage
+
+Both notebooks run top to bottom. Set the data root first:
+
+```python
+# 01_retrieval_colab.ipynb — Colab
+from google.colab import drive
+drive.mount('/gdrive')
+train_dir = '/gdrive/MyDrive/open/train.csv'
+PDF_DIR   = '/gdrive/MyDrive/open/건설안전지침'
+
+# 02_rag_generation_kaggle.ipynb — Kaggle
+train_dir = '/kaggle/input/opendata/train.csv'
+PDF_DIR   = '/kaggle/input/adddata/건설안전지침'
+```
+
+Tunable knobs:
+
+| Parameter | Default | Effect |
+| --- | --- | --- |
+| `top_k` | `3` | retrieved chunks per query — raising it adds context and noise together |
+| similarity threshold | — | drop weak evidence; the single highest-leverage setting |
+| `max_length` | `200` | generated answer length |
+| `needed_columns` | see above | which fields form the retrieval query |
+
+Outputs, written UTF-8-SIG so Excel opens them correctly:
+
+- `submission.csv` / `rag_submission.csv` — retrieval-only
+- `final_submission.csv` — generated answers
+
+Remember to re-encode the final text column with `jhgan/ko-sbert-sts` before
+submitting.
+
+## Notes from building this
+
+**The labels are broad, not rule-generated.** The target text reads as a
+generically-phrased measure attached to a specific cause, rather than something
+produced by a consistent template. That shapes the whole approach: there is no
+rule to reverse-engineer, so retrieving a semantically close real example beats
+trying to synthesise from structure.
+
+**Quantitative metrics for generated text are a poor proxy for quality.** There
+is no settled way to score generated Korean prose, and Jaccard + cosine is a
+compromise, not a measure of usefulness. Closing the gap between what the metric
+rewards and what a good answer looks like is where most of the leverage lives —
+e.g. sampling several candidate answers and selecting among them with your own
+quality criterion, rather than taking a single greedy decode.
+
+**Retrieval quality dominates generation quality.** On this compute budget, time
+spent on the threshold and the hybrid weighting paid off consistently more than
+time spent on the generator.
+
+## Repository layout
+
+```
+Dataset/
+├── README.md              data dictionary and metric definition
+├── test.csv               test records
+└── sample_submission.csv  submission format (ID + text + 768-dim vector)
+
+notebooks/
+├── 01_retrieval_colab.ipynb        retrieval pipeline, Colab
+└── 02_rag_generation_kaggle.ipynb  retrieval + generation, Kaggle
+```
+
+## Related
+
+Season 2 of the same series — a QA service for interior-finishing defects —
+is in [Wallpaper-defects-knowledge-chat-service](https://github.com/paulms77/Wallpaper-defects-knowledge-chat-service).
